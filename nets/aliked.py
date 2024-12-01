@@ -175,3 +175,165 @@ class ALIKED(nn.Module):
             'score_map': pred['score_map'][0,0].cpu().numpy(),  # Bx1xHxW
             'time': pred['time'],
         }
+
+
+
+class EnhancedALIKED(nn.Module):
+
+    def __init__(
+            self,
+            model_name: str = 'aliked-n32',
+            device: str = 'cuda',
+            top_k: int = -1, # -1 for threshold based mode, >0 for top K mode.
+            scores_th: float = 0.2,
+            n_limit: int = 5000, # Maximum number of keypoints to be detected
+            load_pretrained: bool = True,
+            trained_model_path = "/tmp/aliked/models/", 
+            second_desc_dim = 1024
+            
+            ):
+        super().__init__()
+        
+        # get configurations
+        c1, c2, c3, c4, dim, K, M = [v for _,v in ALIKED_CFGS[model_name].items()]
+        conv_types = ['conv','conv','dcn','dcn']
+        conv2D = False
+        mask = False
+        self.device = device
+        
+        # build model
+        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.pool4 = nn.AvgPool2d(kernel_size=4, stride=4)
+        self.norm = nn.BatchNorm2d
+        self.gate = nn.SELU(inplace=True)
+        self.exit = nn.Sigmoid()
+        self.block1 = ConvBlock(3, c1, self.gate, self.norm, conv_type=conv_types[0])
+        self.block2 = ResBlock(c1,c2,1,nn.Conv2d(c1, c2, 1),
+                                gate=self.gate,
+                                norm_layer=self.norm,
+                                conv_type=conv_types[1])
+        self.block3 = ResBlock(c2,c3,1,nn.Conv2d(c2, c3, 1),
+                            gate=self.gate,
+                            norm_layer=self.norm,
+                            conv_type=conv_types[2],
+                            mask = mask)
+        self.block4 = ResBlock(c3,c4,1,nn.Conv2d(c3, c4, 1),
+                            gate=self.gate,
+                            norm_layer=self.norm,
+                            conv_type=conv_types[3],
+                            mask = mask)
+        self.conv1 = resnet.conv1x1(c1, dim // 4)
+        self.conv2 = resnet.conv1x1(c2, dim // 4)
+        self.conv3 = resnet.conv1x1(c3, dim // 4)
+        self.conv4 = resnet.conv1x1(dim, dim // 4)
+        self.upsample2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.upsample4 = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
+        self.upsample8 = nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True)
+        self.upsample32 = nn.Upsample(scale_factor=32, mode='bilinear', align_corners=True)
+        self.score_head = nn.Sequential(resnet.conv1x1(dim, 8), self.gate, resnet.conv3x3(8, 4), self.gate,
+                                                resnet.conv3x3(4, 4), self.gate, resnet.conv3x3(4, 1))
+        self.desc_head = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+        
+        self.desc_head2 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+        self.desc_head3 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+        self.desc_head4 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+        self.desc_head5 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+        self.desc_head6 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+        
+
+        self.dkd = DKD(radius=2, top_k=top_k, scores_th=scores_th, n_limit=n_limit)
+
+        # load pretrained
+        if load_pretrained:
+            pretrained_path = osp.join(f'{trained_model_path}/{model_name}.pth')
+            pretrained_path = osp.abspath(pretrained_path)
+            if osp.exists(pretrained_path):
+                print(f'loading {pretrained_path}')
+                state_dict = torch.load(pretrained_path, 'cpu')
+                self.load_state_dict(state_dict, strict=False)
+                self.to(device)
+                self.eval()
+            else:
+                raise FileNotFoundError(f'cannot find pretrained model: {pretrained_path}')
+
+        self.norm.requires_grad = False
+        
+    def extract_dense_map(self, image):
+        # Pads images such that dimensions are divisible by
+        div_by = 2**5
+        padder = InputPadder(image.shape[-2],image.shape[-1], div_by)
+        image = padder.pad(image)
+
+        # ================================== feature encoder
+        x1 = self.block1(image)  # B x c1 x H x W
+        x2 = self.pool2(x1)
+        x2 = self.block2(x2)  # B x c2 x H/2 x W/2
+        x3 = self.pool4(x2)
+        x3 = self.block3(x3)  # B x c3 x H/8 x W/8
+        x4 = self.pool4(x3)
+        x4 = self.block4(x4)  # B x dim x H/32 x W/32
+        # ================================== feature aggregation
+        x1 = self.gate(self.conv1(x1))  # B x dim//4 x H x W
+        x2 = self.gate(self.conv2(x2))  # B x dim//4 x H//2 x W//2
+        x3 = self.gate(self.conv3(x3))  # B x dim//4 x H//8 x W//8
+        x4 = self.gate(self.conv4(x4))  # B x dim//4 x H//32 x W//32
+        x2_up = self.upsample2(x2)  # B x dim//4 x H x W
+        x3_up = self.upsample8(x3)  # B x dim//4 x H x W
+        x4_up = self.upsample32(x4)  # B x dim//4 x H x W
+        x1234 = torch.cat([x1, x2_up, x3_up, x4_up], dim=1)
+        # ================================== score head
+        score_map = torch.sigmoid(self.score_head(x1234))
+        feature_map = torch.nn.functional.normalize(x1234, p=2, dim=1)
+
+        # Unpads images
+        feature_map = padder.unpad(feature_map)
+        score_map = padder.unpad(score_map)
+
+        return feature_map, score_map
+
+    
+    def fix_score_map(self, feature_map1, feature_map2, score_map):
+        inputs = torch.concat([feature_map1, feature_map2],1)
+        return self.repeatable_scoremap_module(inputs, score_map)
+        
+        
+    def forward(self, image):
+        
+        feature_map, score_map  = self.extract_dense_map(image)
+        
+        keypoints, kptscores, scoredispersitys = self.dkd(score_map)
+        descriptors1, offsets = self.desc_head(feature_map, keypoints)
+        descriptors2, _ = self.desc_head2(feature_map, keypoints)
+        descriptors3, _ = self.desc_head3(feature_map, keypoints)
+        descriptors4, _ = self.desc_head4(feature_map, keypoints)
+        descriptors5, _ = self.desc_head5(feature_map, keypoints)
+        descriptors6, _ = self.desc_head6(feature_map, keypoints)
+        
+        kpts = keypoints[0]
+        _, _, h, w = image.shape
+        wh = torch.tensor([w - 1, h - 1],device=kpts.device)
+        kpts = wh*(kpts+1)/2
+        return {
+            'keypoints': kpts,  # B N 2
+            'descriptors': [descriptors1[0],descriptors2[0],descriptors3[0]
+                             ,descriptors4[0],descriptors5[0],descriptors6[0]],  # B N D
+            'scores': kptscores,  # B N
+            'score_dispersity': scoredispersitys,
+            'score_map': score_map,  # Bx1xHxW
+            'feature_map': feature_map,
+        }
+    
+
+    def run(self, img_rgb):
+        img_tensor = ToTensor()(img_rgb)
+        img_tensor = img_tensor.to(self.device).unsqueeze_(0) 
+        with torch.no_grad():
+            pred = self.forward(img_tensor)
+            kpts = pred['keypoints']
+        return {
+            'keypoints': kpts.cpu().numpy(),  # N 2
+            'descriptors': [d.cpu().numpy() for d in pred['descriptors']],  # N D
+            # 'scores': pred['scores'][0].cpu().numpy(),  # B N D
+            # 'score_map': pred['score_map'][0,0].cpu().numpy(),  # Bx1xHxW
+            # 'feature_map': pred['feature_map'].cpu().numpy(),
+        }
