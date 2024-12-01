@@ -182,7 +182,7 @@ class EnhancedALIKED(nn.Module):
 
     def __init__(
             self,
-            model_name: str = 'aliked-n32',
+            model_name: str = 'Multiple_desc',
             device: str = 'cuda',
             top_k: int = -1, # -1 for threshold based mode, >0 for top K mode.
             scores_th: float = 0.2,
