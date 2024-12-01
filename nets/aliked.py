@@ -188,7 +188,7 @@ class EnhancedALIKED(nn.Module):
             scores_th: float = 0.2,
             n_limit: int = 5000, # Maximum number of keypoints to be detected
             load_pretrained: bool = True,
-            trained_model_path = "/tmp/aliked/models/", 
+            trained_model_path = "./models/", 
             second_desc_dim = 1024
             
             ):
