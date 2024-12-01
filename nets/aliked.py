@@ -38,7 +38,15 @@ ALIKED_CFGS = {'aliked-t16':{'c1': 8,
                              'c4': 128,
                              'dim': 128,
                              'K': 3,
-                             'M': 32},}
+                             'M': 32},
+            'aliked-n32_multiple_desc':{'c1': 16,
+                             'c2': 32,
+                             'c3': 64,
+                             'c4': 128,
+                             'dim': 128,
+                             'K': 3,
+                             'M': 32},
+                             }
 
             
 class ALIKED(nn.Module):
@@ -182,7 +190,7 @@ class EnhancedALIKED(nn.Module):
 
     def __init__(
             self,
-            model_name: str = 'Multiple_desc',
+            model_name: str = 'aliked-n32',
             device: str = 'cuda',
             top_k: int = -1, # -1 for threshold based mode, >0 for top K mode.
             scores_th: float = 0.2,
