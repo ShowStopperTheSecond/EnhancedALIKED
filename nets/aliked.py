@@ -197,7 +197,7 @@ class EnhancedALIKED(nn.Module):
             n_limit: int = 5000, # Maximum number of keypoints to be detected
             load_pretrained: bool = True,
             trained_model_path = "./models/", 
-            second_desc_dim = 1024
+            freeze_aliked = True
             
             ):
         super().__init__()
@@ -208,6 +208,7 @@ class EnhancedALIKED(nn.Module):
         conv2D = False
         mask = False
         self.device = device
+        self.freeze_aliked = freeze_aliked
         
         # build model
         self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2)
@@ -265,6 +266,24 @@ class EnhancedALIKED(nn.Module):
                 raise FileNotFoundError(f'cannot find pretrained model: {pretrained_path}')
 
         self.norm.requires_grad = False
+
+        def freeze_module_weights(module):
+            for param in module.parameters():
+                param.requires_grad = False
+        if self.freeze_aliked :
+            freeze_module_weights(self.score_head)
+            freeze_module_weights(self.desc_head)
+            freeze_module_weights(self.dkd)
+            freeze_module_weights(self.block1)
+            freeze_module_weights(self.block2)
+            freeze_module_weights(self.block3)
+            freeze_module_weights(self.block4)
+            freeze_module_weights(self.conv1)
+            freeze_module_weights(self.conv2)
+            freeze_module_weights(self.conv3)
+            freeze_module_weights(self.conv4)
+            self.norm.requires_grad = False
+
         
     def extract_dense_map(self, image):
         # Pads images such that dimensions are divisible by
