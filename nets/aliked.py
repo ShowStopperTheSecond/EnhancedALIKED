@@ -185,7 +185,6 @@ class ALIKED(nn.Module):
         }
 
 
-
 class EnhancedALIKED(nn.Module):
 
     def __init__(
@@ -197,7 +196,7 @@ class EnhancedALIKED(nn.Module):
             n_limit: int = 5000, # Maximum number of keypoints to be detected
             load_pretrained: bool = True,
             trained_model_path = "./models/", 
-            freeze_aliked = True
+            freeze_aliked = True, 
             
             ):
         super().__init__()
@@ -209,6 +208,7 @@ class EnhancedALIKED(nn.Module):
         mask = False
         self.device = device
         self.freeze_aliked = freeze_aliked
+        self.all_descriptor_heads = []
         
         # build model
         self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2)
@@ -241,15 +241,13 @@ class EnhancedALIKED(nn.Module):
         self.upsample32 = nn.Upsample(scale_factor=32, mode='bilinear', align_corners=True)
         self.score_head = nn.Sequential(resnet.conv1x1(dim, 8), self.gate, resnet.conv3x3(8, 4), self.gate,
                                                 resnet.conv3x3(4, 4), self.gate, resnet.conv3x3(4, 1))
-        self.desc_head = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
-        
+
+        self.desc_head1 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
         self.desc_head2 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
         self.desc_head3 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
-        self.desc_head4 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
-        self.desc_head5 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
-        self.desc_head6 = SDDH(dim, K, M, gate=self.gate, conv2D=conv2D, mask=mask)
+    
+        self.all_descriptor_heads = [self.desc_head1, self.desc_head2, self.desc_head3]
         
-
         self.dkd = DKD(radius=2, top_k=top_k, scores_th=scores_th, n_limit=n_limit)
 
         # load pretrained
@@ -272,7 +270,7 @@ class EnhancedALIKED(nn.Module):
                 param.requires_grad = False
         if self.freeze_aliked :
             freeze_module_weights(self.score_head)
-            freeze_module_weights(self.desc_head)
+            freeze_module_weights(self.all_descriptor_heads[0])
             freeze_module_weights(self.dkd)
             freeze_module_weights(self.block1)
             freeze_module_weights(self.block2)
@@ -327,29 +325,61 @@ class EnhancedALIKED(nn.Module):
     def forward(self, image):
         
         feature_map, score_map  = self.extract_dense_map(image)
-        
         keypoints, kptscores, scoredispersitys = self.dkd(score_map)
-        descriptors1, offsets = self.desc_head(feature_map, keypoints)
-        descriptors2, _ = self.desc_head2(feature_map, keypoints)
-        descriptors3, _ = self.desc_head3(feature_map, keypoints)
-        descriptors4, _ = self.desc_head4(feature_map, keypoints)
-        descriptors5, _ = self.desc_head5(feature_map, keypoints)
-        descriptors6, _ = self.desc_head6(feature_map, keypoints)
-        
+        descriptors = []
+        for desc_head in self.all_descriptor_heads:
+            d, offsets = desc_head(feature_map, keypoints)
+            descriptors.append(d)
+            
         kpts = keypoints[0]
         _, _, h, w = image.shape
         wh = torch.tensor([w - 1, h - 1],device=kpts.device)
         kpts = wh*(kpts+1)/2
         return {
             'keypoints': kpts,  # B N 2
-            'descriptors': [descriptors1[0],descriptors2[0],descriptors3[0]
-                             ,descriptors4[0],descriptors5[0],descriptors6[0]],  # B N D
+            'descriptors': descriptors ,  # B N D
             'scores': kptscores,  # B N
             'score_dispersity': scoredispersitys,
             'score_map': score_map,  # Bx1xHxW
             'feature_map': feature_map,
         }
+
+    def training_forward(self, image1, image2, trans=None):
     
+        feature_map1, score_map1 = self.extract_dense_map(image1)
+        keypoints1, kptscores1, scoredispersitys1 = self.dkd(score_map1)
+        descriptors1 = []
+        for desc_head in self.all_descriptor_heads:
+            d, offsets1 = desc_head(feature_map1, keypoints1)
+            descriptors1.append(d)
+            
+        feature_map2, score_map2 = self.extract_dense_map(image2)
+        if trans is not None:
+            score_map2 = warp(score_map1.cpu().detach().numpy()[0, 0], inverse_map=ProjectiveTransform(trans), preserve_range=True)
+            score_map2 = torch.Tensor(score_map2)[None, None].to('cuda')
+
+        keypoints2, kptscores2, scoredispersitys2 = self.dkd(score_map2)
+        descriptors2 = []        
+        for desc_head in self.all_descriptor_heads:
+            d, offsets2 = desc_head(feature_map2, keypoints2)
+            descriptors2.append(d)
+
+        return {
+            'keypoints1': keypoints1,  # B N 2
+            'descriptors1': descriptors1,  # B N D
+            'scores1': kptscores1,  # B N
+            'score_dispersity1': scoredispersitys1,
+            'score_map1': score_map1,  # Bx1xHxW
+            'feature_map1': feature_map1,
+            
+            'keypoints2': keypoints2,  # B N 2
+            'descriptors2': descriptors2,  # B N D
+            'scores2': kptscores2,  # B N
+            'score_dispersity2': scoredispersitys2,
+            'score_map2': score_map2,  # Bx1xHxW
+            'feature_map2': feature_map2,
+            
+        }
 
     def run(self, img_rgb):
         img_tensor = ToTensor()(img_rgb)
