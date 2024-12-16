@@ -8,6 +8,7 @@ from nets.padder import InputPadder
 from nets.blocks import *
 import time
 from torchvision.transforms import ToTensor
+from skimage.transform import AffineTransform, warp, ProjectiveTransform, rotate
 
 
 
@@ -345,13 +346,21 @@ class EnhancedALIKED(nn.Module):
         }
 
     def training_forward(self, image1, image2, trans=None):
-    
+
+        image1 = ToTensor()(image1)
+        image1 = image1.to(self.device).unsqueeze_(0) 
+        
+        image2 = ToTensor()(image2)
+        image2 = image2.to(self.device).unsqueeze_(0) 
+
+        
+        
         feature_map1, score_map1 = self.extract_dense_map(image1)
         keypoints1, kptscores1, scoredispersitys1 = self.dkd(score_map1)
         descriptors1 = []
         for desc_head in self.all_descriptor_heads:
             d, offsets1 = desc_head(feature_map1, keypoints1)
-            descriptors1.append(d)
+            descriptors1.append(d[0])
             
         feature_map2, score_map2 = self.extract_dense_map(image2)
         if trans is not None:
@@ -362,16 +371,16 @@ class EnhancedALIKED(nn.Module):
         descriptors2 = []        
         for desc_head in self.all_descriptor_heads:
             d, offsets2 = desc_head(feature_map2, keypoints2)
-            descriptors2.append(d)
+            descriptors2.append(d[0])
         
         _, _, h1, w1 = image1.shape
         _, _, h2, w2 = image2.shape
 
-        wh1 = torch.tensor([w1 - 1, h1 - 1],device=kpts1.device)
-        wh2 = torch.tensor([w2 - 1, h2 - 1],device=kpts1.device)
+        wh1 = torch.tensor([w1 - 1, h1 - 1],device=keypoints1[0].device)
+        wh2 = torch.tensor([w2 - 1, h2 - 1],device=keypoints2[0].device)
 
-        keypoints1 = wh1*(keypoints1+1)/2
-        keypoints2 = wh2*(keypoints2+1)/2
+        keypoints1 = wh1*(keypoints1[0]+1)/2
+        keypoints2 = wh2*(keypoints2[0]+1)/2
         
 
         return {
