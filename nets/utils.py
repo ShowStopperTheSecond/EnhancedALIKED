@@ -5,6 +5,8 @@ from torchvision.transforms import functional as F
 import numpy as np
 from skimage.transform import AffineTransform
 import torchvision.transforms.functional as transform
+from torch import Tensor
+from typing import Tuple, List, Optional
 
 
 def _setup_angle(x, name, req_sizes=(2,)):
