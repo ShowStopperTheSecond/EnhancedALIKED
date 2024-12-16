@@ -363,6 +363,16 @@ class EnhancedALIKED(nn.Module):
         for desc_head in self.all_descriptor_heads:
             d, offsets2 = desc_head(feature_map2, keypoints2)
             descriptors2.append(d)
+        
+        _, _, h1, w1 = image1.shape
+        _, _, h2, w2 = image2.shape
+
+        wh1 = torch.tensor([w1 - 1, h1 - 1],device=kpts1.device)
+        wh2 = torch.tensor([w2 - 1, h2 - 1],device=kpts1.device)
+
+        keypoints1 = wh1*(keypoints1+1)/2
+        keypoints2 = wh2*(keypoints2+1)/2
+        
 
         return {
             'keypoints1': keypoints1,  # B N 2
@@ -389,7 +399,7 @@ class EnhancedALIKED(nn.Module):
             kpts = pred['keypoints']
         return {
             'keypoints': kpts.cpu().numpy(),  # N 2
-            'descriptors': [d.cpu().numpy() for d in pred['descriptors']],  # N D
+            'descriptors': [d[0].cpu().numpy() for d in pred['descriptors']],  # N D
             # 'scores': pred['scores'][0].cpu().numpy(),  # B N D
             # 'score_map': pred['score_map'][0,0].cpu().numpy(),  # Bx1xHxW
             # 'feature_map': pred['feature_map'].cpu().numpy(),
