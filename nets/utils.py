@@ -7,6 +7,8 @@ from skimage.transform import AffineTransform
 import torchvision.transforms.functional as transform
 from torch import Tensor
 from typing import Tuple, List, Optional
+from PIL import Image
+import numbers
 
 
 def _setup_angle(x, name, req_sizes=(2,)):
